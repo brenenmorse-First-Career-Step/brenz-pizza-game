@@ -2271,6 +2271,7 @@ function MoneyTab({
   applyInstantEquitySale,
   setAccountingView,
   goBankrupt,
+  unlocks,
 }: {
   state: GameState;
   balanceSheet: ReturnType<typeof buildBalanceSheet>;
