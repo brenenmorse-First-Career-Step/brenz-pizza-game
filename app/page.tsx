@@ -8,7 +8,7 @@ import React, { useMemo, useState } from "react";
 
 type Phase = "intro" | "modeSelect" | "setup" | "running" | "results" | "weekly" | "gameover";
 type TabKey = "store" | "buy" | "recipe" | "staff" | "money";
-type GameMode = "survival" | "standard" | "safetyNet";
+type GameMode = "learning" | "survival" | "standard" | "safetyNet";
 
 type DayEvent = {
   id: string;
@@ -187,6 +187,16 @@ type ModeConfig = {
 };
 
 const MODES: Record<GameMode, ModeConfig> = {
+  learning: {
+    id: "learning",
+    label: "Learning Mode",
+    tagline: "One decision at a time. A gentle first run.",
+    startingCash: 3000,
+    loanBalance: 0,
+    loanDailyPayment: 0,
+    lesson: "Teaches the game's mechanics one lever at a time. Best first play.",
+    color: "#3ba55d",
+  },
   survival: {
     id: "survival",
     label: "Survival Mode",
@@ -274,6 +284,104 @@ function money(v: number, signed = false) {
 
 function pct(v: number) {
   return `${n(v).toFixed(1)}%`;
+}
+
+type Unlocks = {
+  staff: boolean;
+  buy: boolean;
+  price: boolean;
+  recipe: boolean;
+  equity: boolean;
+  distributions: boolean;
+  allEventsOn: boolean;
+};
+
+// Sensible defaults used when a given lever is still locked in Learning Mode.
+// These are designed to be "average competent operator" settings so the player
+// can't lose badly while they're being taught only part of the game.
+const LEARNING_DEFAULTS = {
+  price: 15,
+  cheesePerPizza: 8,
+  pepperoniPerPizza: 2.5,
+  lunchStaff: 2,
+  dinnerStaff: 4,
+  dough: 110,
+  cheeseLbs: 60,
+  pepperoniLbs: 18,
+  boxes: 130,
+};
+
+// Given a mode and day, return which decisions the player can actually make.
+// All other modes return fully-unlocked. Learning Mode reveals one lever per day.
+function getUnlocks(mode: GameMode, day: number): Unlocks {
+  if (mode !== "learning") {
+    return {
+      staff: true,
+      buy: true,
+      price: true,
+      recipe: true,
+      equity: true,
+      distributions: true,
+      allEventsOn: true,
+    };
+  }
+
+  return {
+    staff: day >= 1,
+    buy: day >= 2,
+    price: day >= 3,
+    recipe: day >= 4,
+    equity: day >= 5,
+    distributions: day >= 6,
+    allEventsOn: day >= 3, // gentle: suppress random events for first 2 days
+  };
+}
+
+// Short per-day coaching shown on the Store tab when in Learning Mode.
+function getLearningCoach(day: number): { title: string; body: string } | null {
+  if (day === 1)
+    return {
+      title: "Day 1 · Start with staffing",
+      body:
+        "Today you only set staff. Your inventory and recipe are handled for you. Lunch and dinner each need at least 2 people. More staff = more pizzas you can make per rush. Fewer = cheaper, but you'll miss sales.",
+    };
+  if (day === 2)
+    return {
+      title: "Day 2 · Now you're buying",
+      body:
+        "You now control purchasing. Dough spoils overnight. Cheese, pepperoni, and boxes carry over. Buy enough to meet demand — not so much that dough dies in the fridge.",
+    };
+  if (day === 3)
+    return {
+      title: "Day 3 · You set the price",
+      body:
+        "Price is unlocked. $15 is the neutral price. Drop it and demand goes up but margin shrinks. Raise it and fewer people come but each sale makes more.",
+    };
+  if (day === 4)
+    return {
+      title: "Day 4 · The recipe is yours",
+      body:
+        "You now choose cheese and pepperoni portions. More topping = more cost per pizza, but more customers. Skimp below 0.5 oz pepperoni and your brand takes a 3-day hit.",
+    };
+  if (day === 5)
+    return {
+      title: "Day 5 · Equity raises",
+      body:
+        "Check the Money tab. If you're running out of cash, you can sell 10/20/30% of the shop for a cash injection. But you give up permanent ownership — so only do it when you have to.",
+    };
+  if (day === 6)
+    return {
+      title: "Day 6 · Owner distributions",
+      body:
+        "At the end of every week, you can now pay yourself. Distributions are the whole point of owning a business. Too greedy and the shop runs out of cash; too timid and you worked for free.",
+    };
+  if (day === 7)
+    return {
+      title: "Day 7 · You have the full game",
+      body:
+        "Every lever is now unlocked. You've seen each mechanic one at a time — now it's yours to balance. Good luck.",
+    };
+  return null;
 }
 
 function inventoryValue(inv: GameState["inventory"]) {
@@ -435,8 +543,32 @@ function initialState(mode: GameMode = "standard", startingPhase: Phase = "intro
    ============================================================ */
 
 function simulateDay(state: GameState): DayResult {
-  const { day, purchases, inventory, decisions } = state;
+  const { day, inventory } = state;
   const dow = (day - 1) % 7;
+
+  // In Learning Mode, if a lever isn't unlocked yet, the player-visible value
+  // is ignored and we substitute a sensible "average operator" default so the
+  // game still plays reasonably.
+  const simUnlocks = getUnlocks(state.mode, day);
+  const decisions = {
+    price: simUnlocks.price ? n(state.decisions.price) : LEARNING_DEFAULTS.price,
+    cheesePerPizza: simUnlocks.recipe
+      ? n(state.decisions.cheesePerPizza)
+      : LEARNING_DEFAULTS.cheesePerPizza,
+    pepperoniPerPizza: simUnlocks.recipe
+      ? n(state.decisions.pepperoniPerPizza)
+      : LEARNING_DEFAULTS.pepperoniPerPizza,
+    lunchStaff: simUnlocks.staff ? n(state.decisions.lunchStaff) : LEARNING_DEFAULTS.lunchStaff,
+    dinnerStaff: simUnlocks.staff ? n(state.decisions.dinnerStaff) : LEARNING_DEFAULTS.dinnerStaff,
+  };
+  const purchases = {
+    dough: simUnlocks.buy ? n(state.purchases.dough) : LEARNING_DEFAULTS.dough,
+    cheeseLbs: simUnlocks.buy ? n(state.purchases.cheeseLbs) : LEARNING_DEFAULTS.cheeseLbs,
+    pepperoniLbs: simUnlocks.buy
+      ? n(state.purchases.pepperoniLbs)
+      : LEARNING_DEFAULTS.pepperoniLbs,
+    boxes: simUnlocks.buy ? n(state.purchases.boxes) : LEARNING_DEFAULTS.boxes,
+  };
 
   const startInv = {
     dough: n(inventory.dough) + n(purchases.dough),
@@ -457,7 +589,9 @@ function simulateDay(state: GameState): DayResult {
   let fixedCostExtra = 0;
   let priceAdjustment = 0;
 
-  const roll = Math.random();
+  // In Learning Mode's first days, suppress random events so new players
+  // don't get blindsided before they understand the mechanics.
+  const roll = simUnlocks.allEventsOn ? Math.random() : 0.99; // 0.99 falls outside every event branch → "Normal Day"
 
   if (roll < 0.1) {
     actualCheeseOz = n(decisions.cheesePerPizza) * 1.25;
@@ -897,8 +1031,31 @@ function buildTAccounts(state: GameState) {
 export default function Page() {
   const [state, setState] = useState<GameState>(initialState());
 
-  const p = state.purchases;
-  const d = state.decisions;
+  const unlocks = getUnlocks(state.mode, state.day);
+  const learningCoach = state.mode === "learning" ? getLearningCoach(state.day) : null;
+
+  // When a lever is locked, we fall back to LEARNING_DEFAULTS both visually
+  // and for cost calculations — so the player sees the right order total and
+  // the simulation uses the same value we charged them for.
+  const p = {
+    dough: unlocks.buy ? n(state.purchases.dough) : LEARNING_DEFAULTS.dough,
+    cheeseLbs: unlocks.buy ? n(state.purchases.cheeseLbs) : LEARNING_DEFAULTS.cheeseLbs,
+    pepperoniLbs: unlocks.buy
+      ? n(state.purchases.pepperoniLbs)
+      : LEARNING_DEFAULTS.pepperoniLbs,
+    boxes: unlocks.buy ? n(state.purchases.boxes) : LEARNING_DEFAULTS.boxes,
+  };
+  const d = {
+    price: unlocks.price ? n(state.decisions.price) : LEARNING_DEFAULTS.price,
+    cheesePerPizza: unlocks.recipe
+      ? n(state.decisions.cheesePerPizza)
+      : LEARNING_DEFAULTS.cheesePerPizza,
+    pepperoniPerPizza: unlocks.recipe
+      ? n(state.decisions.pepperoniPerPizza)
+      : LEARNING_DEFAULTS.pepperoniPerPizza,
+    lunchStaff: unlocks.staff ? n(state.decisions.lunchStaff) : LEARNING_DEFAULTS.lunchStaff,
+    dinnerStaff: unlocks.staff ? n(state.decisions.dinnerStaff) : LEARNING_DEFAULTS.dinnerStaff,
+  };
   const dow = (state.day - 1) % 7;
 
   const purchaseCost =
@@ -1224,15 +1381,19 @@ export default function Page() {
             </p>
 
             <div className="modeList">
-              {(["survival", "standard", "safetyNet"] as GameMode[]).map((m) => {
+              {(["learning", "survival", "standard", "safetyNet"] as GameMode[]).map((m) => {
                 const cfg = MODES[m];
+                const isRecommended = m === "learning";
                 return (
                   <button
                     key={m}
-                    className="modeCard"
+                    className={`modeCard ${isRecommended ? "modeCardRecommended" : ""}`}
                     style={{ borderColor: cfg.color }}
                     onClick={() => selectMode(m)}
                   >
+                    {isRecommended && (
+                      <div className="modeRecBadge">RECOMMENDED FOR FIRST PLAY</div>
+                    )}
                     <div className="modeCardTop">
                       <div className="modeCardName" style={{ color: cfg.color }}>
                         {cfg.label}
@@ -1413,7 +1574,7 @@ export default function Page() {
                 <Row label="Food used" value={money(n(r.foodCostUsed))} />
                 <Row label="Spoilage" value={money(n(r.spoilageCost))} />
                 <Row label="Labor" value={money(n(r.laborCost))} />
-                <Row label="Fixed" value={money(n(r.fixedCost))} />
+                <Row label="Fixedc" value={money(n(r.fixedCost))} />
                 <Row label="Net profit" value={money(n(r.profit), true)} bold tone={n(r.profit) >= 0 ? "good" : "bad"} />
               </div>
             )}
@@ -1585,6 +1746,8 @@ export default function Page() {
             canAfford={canAfford}
             openStore={openStore}
             dow={dow}
+            unlocks={unlocks}
+            learningCoach={learningCoach}
           />
         )}
 
@@ -1596,13 +1759,22 @@ export default function Page() {
             setPurchase={setPurchase}
             canAfford={canAfford}
             openStore={openStore}
+            unlocks={unlocks}
           />
         )}
 
-        {state.activeTab === "recipe" && <RecipeTab d={d} setDecision={setDecision} />}
+        {state.activeTab === "recipe" && (
+          <RecipeTab d={d} setDecision={setDecision} unlocks={unlocks} />
+        )}
 
         {state.activeTab === "staff" && (
-          <StaffTab d={d} setDecision={setDecision} totalLaborHours={totalLaborHours} laborPreview={laborPreview} />
+          <StaffTab
+            d={d}
+            setDecision={setDecision}
+            totalLaborHours={totalLaborHours}
+            laborPreview={laborPreview}
+            unlocks={unlocks}
+          />
         )}
 
         {state.activeTab === "money" && (
@@ -1614,6 +1786,7 @@ export default function Page() {
             applyInstantEquitySale={applyInstantEquitySale}
             setAccountingView={setAccountingView}
             goBankrupt={goBankrupt}
+            unlocks={unlocks}
           />
         )}
       </div>
@@ -1713,6 +1886,8 @@ function StoreTab({
   canAfford,
   openStore,
   dow,
+  unlocks,
+  learningCoach,
 }: {
   state: GameState;
   projectedRange: { lo: number; hi: number };
@@ -1721,10 +1896,21 @@ function StoreTab({
   canAfford: boolean;
   openStore: () => void;
   dow: number;
+  unlocks: Unlocks;
+  learningCoach: { title: string; body: string } | null;
 }) {
   return (
     <>
       <AnimatedStoreScene day={state.day} dow={dow} running={false} />
+
+      {learningCoach && (
+        <div className="coachCard">
+          <div className="coachBadge">LEARNING · DAY {state.day}</div>
+          <div className="coachTitle">{learningCoach.title}</div>
+          <div className="coachBody">{learningCoach.body}</div>
+          <UnlockMap unlocks={unlocks} />
+        </div>
+      )}
 
       <div className="sectionCard">
         <div className="sectionLabel">TONIGHT&apos;S FORECAST</div>
@@ -1771,6 +1957,33 @@ function StoreTab({
   );
 }
 
+// Visual tracker: which levers are unlocked today vs. locked with the day they open.
+function UnlockMap({ unlocks }: { unlocks: Unlocks }) {
+  const items: { key: keyof Unlocks; label: string; unlockDay: number }[] = [
+    { key: "staff", label: "Staff", unlockDay: 1 },
+    { key: "buy", label: "Buy", unlockDay: 2 },
+    { key: "price", label: "Price", unlockDay: 3 },
+    { key: "recipe", label: "Recipe", unlockDay: 4 },
+    { key: "equity", label: "Equity", unlockDay: 5 },
+    { key: "distributions", label: "Payout", unlockDay: 6 },
+  ];
+
+  return (
+    <div className="unlockMap">
+      {items.map((it) => {
+        const open = unlocks[it.key];
+        return (
+          <div key={it.key} className={`unlockPill ${open ? "unlockOpen" : "unlockLocked"}`}>
+            <span className="unlockDot">{open ? "●" : "🔒"}</span>
+            <span className="unlockPillLabel">{it.label}</span>
+            {!open && <span className="unlockWhen">D{it.unlockDay}</span>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function BuyTab({
   state,
   p,
@@ -1778,6 +1991,7 @@ function BuyTab({
   setPurchase,
   canAfford,
   openStore,
+  unlocks,
 }: {
   state: GameState;
   p: GameState["purchases"];
@@ -1785,7 +1999,29 @@ function BuyTab({
   setPurchase: <K extends keyof GameState["purchases"]>(key: K, value: number) => void;
   canAfford: boolean;
   openStore: () => void;
+  unlocks: Unlocks;
 }) {
+  if (!unlocks.buy) {
+    return (
+      <>
+        <LockedPanel
+          title="Purchasing locked until Day 2"
+          body="Today your ingredients are being ordered for you at a sensible amount. Tomorrow you'll decide how much to buy — buy too little and you miss sales, too much and dough spoils overnight."
+        />
+        <div className="sectionCard">
+          <div className="sectionLabel">AUTO-ORDER TODAY</div>
+          <div className="sheet">
+            <Row label="Dough balls" value={`${LEARNING_DEFAULTS.dough}`} />
+            <Row label="Cheese" value={`${LEARNING_DEFAULTS.cheeseLbs} lbs`} />
+            <Row label="Pepperoni" value={`${LEARNING_DEFAULTS.pepperoniLbs} lbs`} />
+            <Row label="Boxes" value={`${LEARNING_DEFAULTS.boxes}`} />
+            <Row label="Order total" value={money(purchaseCost)} bold />
+          </div>
+        </div>
+      </>
+    );
+  }
+
   return (
     <>
       <div className="sectionCard">
@@ -1873,60 +2109,91 @@ function BuyTab({
 function RecipeTab({
   d,
   setDecision,
+  unlocks,
 }: {
   d: GameState["decisions"];
   setDecision: <K extends keyof GameState["decisions"]>(key: K, value: number) => void;
+  unlocks: Unlocks;
 }) {
+  // If both locked, show one clear panel.
+  if (!unlocks.price && !unlocks.recipe) {
+    return (
+      <>
+        <LockedPanel
+          title="Recipe & price locked"
+          body="Price unlocks Day 3. Recipe portions (cheese & pepperoni) unlock Day 4. Until then, we use standard settings: $15 price, 8 oz cheese, 2.5 oz pepperoni."
+        />
+        <div className="sectionCard">
+          <div className="sectionLabel">AUTO-SETTINGS TODAY</div>
+          <div className="sheet">
+            <Row label="Price" value={`$${LEARNING_DEFAULTS.price}`} />
+            <Row label="Cheese per pizza" value={`${LEARNING_DEFAULTS.cheesePerPizza.toFixed(1)} oz`} />
+            <Row
+              label="Pepperoni per pizza"
+              value={`${LEARNING_DEFAULTS.pepperoniPerPizza.toFixed(2)} oz`}
+            />
+          </div>
+        </div>
+      </>
+    );
+  }
+
   return (
     <>
-      <div className="sectionCard">
-        <div className="sectionLabel">RECIPE &amp; PRICE</div>
-
-        <ControlRow
-          name='Cheese per 12" pizza'
-          sub="Higher cheese helps appeal but hurts cost"
-          value={n(d.cheesePerPizza)}
-          setValue={(v) => setDecision("cheesePerPizza", v)}
-          min={6}
-          max={12}
-          step={0.5}
-          format={(v) => `${v.toFixed(1)} oz`}
-        />
-        <ControlRow
-          name='Pepperoni per 12" pizza'
-          sub="Too little pepperoni will crush demand"
-          value={n(d.pepperoniPerPizza)}
-          setValue={(v) => setDecision("pepperoniPerPizza", v)}
-          min={0.05}
-          max={6}
-          step={0.05}
-          format={(v) => `${v.toFixed(2)} oz`}
-        />
-        <ControlRow
-          name='Price per pizza'
-          sub="Lower price drives traffic. Higher protects margin."
-          value={n(d.price)}
-          setValue={(v) => setDecision("price", v)}
-          min={10}
-          max={25}
-          step={1}
-          format={(v) => `$${v}`}
-        />
-
-        {n(d.pepperoniPerPizza) < SKIMP_THRESHOLD_OZ && (
-          <div className="warning">
-            ⚠ You are about to <b>skimp</b>. Using less than {SKIMP_THRESHOLD_OZ} oz of pepperoni
-            saves pennies today but triggers a <b>brand equity penalty</b>: demand drops for{" "}
-            {SKIMP_PENALTY_DAYS} days. Customers remember.
-          </div>
-        )}
-      </div>
-
-      <div className="sectionCard hint">
-        <div className="hintText">
-          A <b>$15</b> price is baseline. Every $1 up or down reshapes demand.
+      {unlocks.price && (
+        <div className="sectionCard">
+          <div className="sectionLabel">PRICE</div>
+          <ControlRow
+            name="Price per pizza"
+            sub="Lower price drives traffic. Higher protects margin."
+            value={n(d.price)}
+            setValue={(v) => setDecision("price", v)}
+            min={10}
+            max={25}
+            step={1}
+            format={(v) => `$${v}`}
+          />
         </div>
-      </div>
+      )}
+
+      {unlocks.recipe ? (
+        <div className="sectionCard">
+          <div className="sectionLabel">RECIPE</div>
+          <ControlRow
+            name='Cheese per 12" pizza'
+            sub="Higher cheese helps appeal but hurts cost"
+            value={n(d.cheesePerPizza)}
+            setValue={(v) => setDecision("cheesePerPizza", v)}
+            min={6}
+            max={12}
+            step={0.5}
+            format={(v) => `${v.toFixed(1)} oz`}
+          />
+          <ControlRow
+            name='Pepperoni per 12" pizza'
+            sub="Too little pepperoni will crush demand"
+            value={n(d.pepperoniPerPizza)}
+            setValue={(v) => setDecision("pepperoniPerPizza", v)}
+            min={0.05}
+            max={6}
+            step={0.05}
+            format={(v) => `${v.toFixed(2)} oz`}
+          />
+
+          {n(d.pepperoniPerPizza) < SKIMP_THRESHOLD_OZ && (
+            <div className="warning">
+              ⚠ You are about to <b>skimp</b>. Using less than {SKIMP_THRESHOLD_OZ} oz of pepperoni
+              saves pennies today but triggers a <b>brand equity penalty</b>: demand drops for{" "}
+              {SKIMP_PENALTY_DAYS} days. Customers remember.
+            </div>
+          )}
+        </div>
+      ) : (
+        <LockedPanel
+          title="Recipe portions locked until Day 4"
+          body="Right now we use 8 oz of cheese and 2.5 oz of pepperoni — a solid baseline. On Day 4 you'll decide how much to use. More topping = more demand but also more cost per pizza."
+        />
+      )}
     </>
   );
 }
@@ -1936,11 +2203,13 @@ function StaffTab({
   setDecision,
   totalLaborHours,
   laborPreview,
+  unlocks: _unlocks,
 }: {
   d: GameState["decisions"];
   setDecision: <K extends keyof GameState["decisions"]>(key: K, value: number) => void;
   totalLaborHours: number;
   laborPreview: number;
+  unlocks: Unlocks;
 }) {
   const lunchCap = n(d.lunchStaff) * LUNCH_BLOCK_HOURS * PIZZAS_PER_PERSON_PER_HOUR;
   const dinnerCap = n(d.dinnerStaff) * DINNER_BLOCK_HOURS * PIZZAS_PER_PERSON_PER_HOUR;
@@ -2010,6 +2279,7 @@ function MoneyTab({
   applyInstantEquitySale: (pct: number) => void;
   setAccountingView: (v: "simple" | "advanced") => void;
   goBankrupt: () => void;
+  unlocks: Unlocks;
 }) {
   const simple = state.accountingView === "simple";
 
@@ -2052,11 +2322,12 @@ function MoneyTab({
         </div>
       )}
 
-      <div className="sectionCard">
-        <div className="sectionLabel">EQUITY RAISE</div>
-        <div className="hintText" style={{ marginBottom: 12 }}>
-          Sell part of the shop for instant cash. This lowers ownership immediately.
-        </div>
+      {unlocks.equity ? (
+        <div className="sectionCard">
+          <div className="sectionLabel">EQUITY RAISE</div>
+          <div className="hintText" style={{ marginBottom: 12 }}>
+            Sell part of the shop for instant cash. This lowers ownership immediately.
+          </div>
 
         <div className="equityGrid">
           <button className="equityBtn blue" onClick={() => applyInstantEquitySale(10)}>
@@ -2081,6 +2352,12 @@ function MoneyTab({
           <Row label="Total distributions taken" value={money(state.totalDistributions)} />
         </div>
       </div>
+      ) : (
+        <LockedPanel
+          title="Equity raises unlock Day 5"
+          body="If you ever run out of cash, you'll be able to sell 10/20/30% of the shop for an instant cash injection. But giving up ownership is permanent — it's a tool for emergencies, not a first move."
+        />
+      )}
 
       {/* Loan card only if player has a loan */}
       {(n(state.loanBalance) > 0 || n(state.loanDailyPayment) > 0) && (
@@ -2334,6 +2611,19 @@ function StatCell({ big, label }: { big: string; label: string }) {
   );
 }
 
+// Shown in place of controls when a lever is locked in Learning Mode.
+// Explains what the feature is and when it unlocks, so the player knows
+// what to expect without just seeing an empty tab.
+function LockedPanel({ title, body }: { title: string; body: string }) {
+  return (
+    <div className="lockedPanel">
+      <div className="lockedIcon">🔒</div>
+      <div className="lockedTitle">{title}</div>
+      <div className="lockedBody">{body}</div>
+    </div>
+  );
+}
+
 /* CommonSensePL — breaks $1 of revenue into its component cents so non-accountants
    can see exactly where the money goes. Teaches the "prime cost + fixed cost + profit"
    mental model without any debit/credit machinery. */
@@ -2384,7 +2674,7 @@ function CommonSensePL({
       <div className="simpleBar" role="img" aria-label="Dollar breakdown">
         <div className="simpleBarSeg food" style={{ width: `${barFood}%` }} />
         <div className="simpleBarSeg labor" style={{ width: `${barLabor}%` }} />
-        <div className="simpleBarSeg fixedc" style={{ width: `${barFixed}%` }} />
+        <div className="simpleBarSeg fixed" style={{ width: `${barFixed}%` }} />
         {profitPositive ? (
           <div className="simpleBarSeg profit" style={{ width: `${barProfit}%` }} />
         ) : (
@@ -2408,8 +2698,8 @@ function CommonSensePL({
         <SimpleRow
           swatch="fixedc"
           cents={toCents(fixedCents)}
-          label="went to rent, utilities & loan"
-          sub="Costs you pay even on a slow day"
+          label="went to rent &amp; utilities"
+          sub="Fixed costs you pay even on a slow day"
         />
         <SimpleRow
           swatch={profitPositive ? "profit" : "loss"}
@@ -3342,7 +3632,7 @@ function Styles() {
       }
       .simpleBarSeg.food { background: linear-gradient(180deg, #e4ad2c, #d49d25); }
       .simpleBarSeg.labor { background: linear-gradient(180deg, #4f8fff, #3f82ff); }
-      .simpleBarSeg.fixedc { background: linear-gradient(180deg, #a88b6b, #866a4c); }
+      .simpleBarSeg.fixed { background: linear-gradient(180deg, #a88b6b, #866a4c); }
       .simpleBarSeg.profit { background: linear-gradient(180deg, #46bd6a, #3ba55d); }
       .simpleBarSeg.loss {
         background: repeating-linear-gradient(
@@ -3361,7 +3651,7 @@ function Styles() {
       }
       .simpleRow {
         display: grid;
-        grid-template-columns: 14px 1fr;
+        grid-template-columns: 14px minmax(0, 1fr);
         gap: 12px;
         padding: 10px 0;
         border-top: 1px solid #2d2217;
@@ -3372,20 +3662,27 @@ function Styles() {
         width: 14px;
         height: 14px;
         border-radius: 4px;
-        margin-top: 4px;
+        margin-top: 6px;
+        flex-shrink: 0;
       }
       .simpleSwatch.food { background: #d49d25; }
       .simpleSwatch.labor { background: #3f82ff; }
-      .simpleSwatch.fixedc { background: #866a4c; }
+      .simpleSwatch.fixed { background: #a88b6b; }
       .simpleSwatch.profit { background: #3ba55d; }
       .simpleSwatch.loss { background: #b63b3b; }
 
-      .simpleRowBody { min-width: 0; }
+      .simpleRowBody {
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
       .simpleRowTop {
         display: flex;
         align-items: baseline;
         gap: 10px;
         flex-wrap: wrap;
+        min-width: 0;
       }
       .simpleCents {
         font-size: 20px;
@@ -3393,6 +3690,7 @@ function Styles() {
         font-variant-numeric: tabular-nums;
         color: #f3e7c9;
         letter-spacing: -0.01em;
+        flex-shrink: 0;
       }
       .simpleCents.good { color: #9edf83; }
       .simpleCents.bad { color: #ff9d84; }
@@ -3400,12 +3698,17 @@ function Styles() {
         font-size: 14px;
         color: #f3e7c9;
         font-weight: 600;
+        flex: 1 1 auto;
+        min-width: 0;
+        word-break: normal;
+        overflow-wrap: break-word;
       }
       .simpleSub {
-        margin-top: 4px;
         font-size: 12px;
         color: #8f7d5d;
         line-height: 1.4;
+        word-break: normal;
+        overflow-wrap: break-word;
       }
       .simpleFooter {
         margin-top: 12px;
@@ -3414,6 +3717,128 @@ function Styles() {
         font-size: 13px;
         color: #c8b48c;
         font-weight: 700;
+      }
+
+      /* =========== LEARNING MODE: COACH CARD =========== */
+      .coachCard {
+        background: linear-gradient(180deg, rgba(59, 165, 93, 0.14), rgba(59, 165, 93, 0.06));
+        border: 1px solid rgba(59, 165, 93, 0.5);
+        border-radius: 18px;
+        padding: 16px;
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+      }
+      .coachBadge {
+        display: inline-block;
+        font-size: 10px;
+        letter-spacing: .14em;
+        font-weight: 900;
+        color: #9edf83;
+        padding: 4px 8px;
+        background: rgba(59, 165, 93, 0.18);
+        border-radius: 999px;
+        margin-bottom: 10px;
+      }
+      .coachTitle {
+        font-size: 18px;
+        font-weight: 900;
+        color: #f3e7c9;
+        line-height: 1.2;
+        letter-spacing: -0.01em;
+      }
+      .coachBody {
+        margin-top: 8px;
+        color: #d8c8a2;
+        font-size: 14px;
+        line-height: 1.55;
+      }
+
+      /* =========== LEARNING MODE: UNLOCK MAP =========== */
+      .unlockMap {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 14px;
+        padding-top: 14px;
+        border-top: 1px solid rgba(59, 165, 93, 0.25);
+      }
+      .unlockPill {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 5px 10px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: .03em;
+        border: 1px solid #3b2d1f;
+      }
+      .unlockOpen {
+        background: rgba(59, 165, 93, 0.2);
+        border-color: rgba(59, 165, 93, 0.45);
+        color: #c0e9af;
+      }
+      .unlockLocked {
+        background: #16110c;
+        color: #8f7d5d;
+      }
+      .unlockDot {
+        font-size: 10px;
+        line-height: 1;
+      }
+      .unlockPillLabel {
+        font-weight: 800;
+      }
+      .unlockWhen {
+        font-size: 10px;
+        color: #c8b48c;
+        opacity: 0.75;
+        letter-spacing: .05em;
+      }
+
+      /* =========== LEARNING MODE: LOCKED PANEL =========== */
+      .lockedPanel {
+        background: #1b140e;
+        border: 1px dashed #3b2d1f;
+        border-radius: 18px;
+        padding: 24px 18px;
+        text-align: center;
+      }
+      .lockedIcon {
+        font-size: 28px;
+        margin-bottom: 8px;
+        opacity: 0.8;
+      }
+      .lockedTitle {
+        font-size: 16px;
+        font-weight: 900;
+        color: #f2b443;
+        letter-spacing: .02em;
+      }
+      .lockedBody {
+        margin-top: 10px;
+        color: #c8b48c;
+        font-size: 13px;
+        line-height: 1.55;
+        max-width: 420px;
+        margin-left: auto;
+        margin-right: auto;
+      }
+
+      /* =========== MODE CARD RECOMMENDED BADGE =========== */
+      .modeCardRecommended {
+        position: relative;
+        box-shadow: 0 8px 24px rgba(59, 165, 93, 0.25);
+      }
+      .modeRecBadge {
+        display: inline-block;
+        font-size: 10px;
+        letter-spacing: .14em;
+        font-weight: 900;
+        color: #fff;
+        padding: 4px 10px;
+        background: #3ba55d;
+        border-radius: 999px;
+        margin-bottom: 10px;
       }
 
       /* =========== RESPONSIVE =========== */
