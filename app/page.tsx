@@ -683,7 +683,24 @@ function simulateDay(state: GameState): DayResult {
 
   const effectivePrice = Math.max(10, n(decisions.price) + priceAdjustment);
 
-  const priceEffect = Math.pow(15 / effectivePrice, 1.4);
+  // Price sensitivity: keep $25 available, but make premium pricing risky.
+  // $15 remains the neutral baseline. Higher prices raise margin but should reduce traffic hard.
+  let priceEffect = Math.pow(15 / effectivePrice, 2.2);
+
+  if (effectivePrice > 18) {
+    priceEffect *= 0.85;
+  }
+
+  if (effectivePrice > 20) {
+    priceEffect *= 0.65;
+  }
+
+  if (effectivePrice > 23) {
+    priceEffect *= 0.4;
+  }
+
+  // Demand should not fully disappear, but $24-$25 should no longer be an easy win.
+  priceEffect = Math.max(0.15, priceEffect);
   const cheeseQualityEffect = 1 + (n(decisions.cheesePerPizza) - 8) * 0.05;
   const pepperoniEffect = getPepperoniDemandEffect(n(decisions.pepperoniPerPizza));
   const dayEffect = DAY_MULT[dow];
@@ -858,8 +875,17 @@ function simulateDay(state: GameState): DayResult {
 
   const coaching: string[] = [];
 
-  if (dinnerLost > 15)
-    coaching.push(`You lost ${dinnerLost} pizzas during dinner because dinner staffing was too weak.`);
+  if (dinnerLost > 15) {
+    if (dinnerBottleneck === "dinner labor") {
+      coaching.push(`You lost ${dinnerLost} pizzas during dinner because dinner staffing was too weak.`);
+    } else if (dinnerBottleneck === "dough") {
+      coaching.push(
+        `You lost ${dinnerLost} pizzas during dinner because you did not prep enough dough. More staff would not have helped.`
+      );
+    } else if (dinnerBottleneck) {
+      coaching.push(`You lost ${dinnerLost} pizzas during dinner because you ran out of ${dinnerBottleneck}.`);
+    }
+  }
   if (lunchLost > 10)
     coaching.push(`You missed ${lunchLost} lunch pizzas. Lunch staffing or inventory was too tight.`);
   if (doughSpoiled > 20) coaching.push(`You spoiled ${doughSpoiled} dough balls. You overbought inventory.`);
@@ -1130,21 +1156,31 @@ export default function Page() {
   }
 
   function applyInstantEquitySale(pctSold: number) {
-    if (pctSold === 0) return;
-    const cashIn = getEquityRaiseCash(pctSold);
+    const MIN_OWNERSHIP = 0.1;
 
-    setState((s) => ({
-      ...s,
-      cash: n(s.cash) + cashIn,
-      ownership: clamp(n(s.ownership) - pctSold / 100, 0.05, 1),
-      journal: [
-        ...s.journal,
-        makeEntry(s.day, `Sold ${pctSold}% equity`, [
-          { account: "Cash", debit: cashIn, credit: 0 },
-          { account: "Owner Equity", debit: 0, credit: cashIn },
-        ]),
-      ],
-    }));
+    if (pctSold === 0) return;
+
+    setState((s) => {
+      const maxPctCanSell = Math.max(0, (n(s.ownership) - MIN_OWNERSHIP) * 100);
+      const actualPctSold = Math.min(pctSold, maxPctCanSell);
+
+      if (actualPctSold <= 0) return s;
+
+      const cashIn = getEquityRaiseCash(actualPctSold);
+
+      return {
+        ...s,
+        cash: n(s.cash) + cashIn,
+        ownership: Math.max(MIN_OWNERSHIP, n(s.ownership) - actualPctSold / 100),
+        journal: [
+          ...s.journal,
+          makeEntry(s.day, `Sold ${actualPctSold}% equity`, [
+            { account: "Cash", debit: cashIn, credit: 0 },
+            { account: "Owner Equity", debit: 0, credit: cashIn },
+          ]),
+        ],
+      };
+    });
   }
 
   function openStore() {
@@ -2283,6 +2319,8 @@ function MoneyTab({
   unlocks: Unlocks;
 }) {
   const simple = state.accountingView === "simple";
+  const ownershipPct = Math.round(n(state.ownership) * 100);
+  const maxPctCanSell = Math.max(0, ownershipPct - 10);
 
   return (
     <>
@@ -2331,19 +2369,37 @@ function MoneyTab({
           </div>
 
         <div className="equityGrid">
-          <button className="equityBtn blue" onClick={() => applyInstantEquitySale(10)}>
+          <button
+            className={`equityBtn blue ${maxPctCanSell < 10 ? "disabled" : ""}`}
+            disabled={maxPctCanSell < 10}
+            onClick={() => applyInstantEquitySale(10)}
+          >
             <div className="equityPct">Sell 10%</div>
             <div className="equityCash">+{money(300)}</div>
           </button>
-          <button className="equityBtn gold" onClick={() => applyInstantEquitySale(20)}>
+          <button
+            className={`equityBtn gold ${maxPctCanSell < 20 ? "disabled" : ""}`}
+            disabled={maxPctCanSell < 20}
+            onClick={() => applyInstantEquitySale(20)}
+          >
             <div className="equityPct">Sell 20%</div>
             <div className="equityCash">+{money(700)}</div>
           </button>
-          <button className="equityBtn orange" onClick={() => applyInstantEquitySale(30)}>
+          <button
+            className={`equityBtn orange ${maxPctCanSell < 30 ? "disabled" : ""}`}
+            disabled={maxPctCanSell < 30}
+            onClick={() => applyInstantEquitySale(30)}
+          >
             <div className="equityPct">Sell 30%</div>
             <div className="equityCash">+{money(1200)}</div>
           </button>
         </div>
+
+        {maxPctCanSell <= 0 && (
+          <div className="hintText" style={{ marginTop: 10 }}>
+            You must keep at least 10% ownership. You cannot sell more equity.
+          </div>
+        )}
 
         <div className="sheet" style={{ marginTop: 12 }}>
           <Row
@@ -3423,6 +3479,14 @@ function Styles() {
         gap: 4px;
         align-items: center;
         box-shadow: 0 8px 18px rgba(0,0,0,0.3);
+      }
+      .equityBtn.disabled,
+      .equityBtn:disabled {
+        background: #3b322a;
+        color: #7d7060;
+        cursor: not-allowed;
+        box-shadow: none;
+        opacity: 0.55;
       }
       .equityPct { font-size: 14px; letter-spacing: .04em; }
       .equityCash { font-size: 13px; opacity: .92; }
