@@ -57,6 +57,11 @@ type DayResult = {
   totalCost: number;
   profit: number;
 
+  customerRating: number;
+  reputationBefore: number;
+  customerReviews: string[];
+  customerRatingMessage: string;
+
   foodPct: number;
   laborPct: number;
   primePct: number;
@@ -127,6 +132,8 @@ type GameState = {
 
   brandPenalty: number;
   brandPenaltyDaysLeft: number;
+
+  satisfactionHistory: number[];
 
   accountingView: "simple" | "advanced";
 
@@ -414,6 +421,195 @@ function getPepperoniDemandEffect(pepOz: number) {
   return 0.95;
 }
 
+
+function getCustomerReputation(history: number[]) {
+  if (!history || history.length === 0) return 4.1;
+  const recent = history.slice(-5);
+  return recent.reduce((sum, rating) => sum + n(rating), 0) / recent.length;
+}
+
+function getReputationDemandEffect(reputation: number) {
+  const r = n(reputation);
+  if (r >= 4.8) return 1.18;
+  if (r >= 4.4) return 1.1;
+  if (r >= 3.8) return 1.0;
+  if (r >= 3.0) return 0.85;
+  return 0.65;
+}
+
+function getCustomerRatingFeedback(rating: number) {
+  const r = n(rating);
+
+  if (r >= 4.8) {
+    return {
+      message: "LEGENDARY DAY. CUSTOMERS LOVE YOU.",
+      reviews: [
+        "Best pizza I’ve had in forever.",
+        "Fast, hot, and totally worth it.",
+        "This place is becoming my new favorite.",
+      ],
+    };
+  }
+
+  if (r >= 4.3) {
+    return {
+      message: "GREAT DAY. REPUTATION IS BUILDING.",
+      reviews: [
+        "Really good pizza tonight.",
+        "Good value and solid service.",
+        "I’d definitely order again.",
+      ],
+    };
+  }
+
+  if (r >= 3.8) {
+    return {
+      message: "DECENT DAY. BUT NOT MEMORABLE.",
+      reviews: [
+        "Pizza was fine.",
+        "Nothing bad, but nothing amazing.",
+        "Service was okay.",
+      ],
+    };
+  }
+
+  if (r >= 3.0) {
+    return {
+      message: "WEAK DAY. CUSTOMERS ARE NOT IMPRESSED.",
+      reviews: [
+        "Pizza was okay but too expensive.",
+        "Took too long to get my order.",
+        "Not sure I’d come back soon.",
+      ],
+    };
+  }
+
+  return {
+    message: "BAD DAY. YOU DAMAGED THE BRAND.",
+    reviews: [
+      "Way too slow.",
+      "Not worth the price.",
+      "They clearly were not ready for dinner.",
+    ],
+  };
+}
+
+type SmartReviewContext = {
+  rating: number;
+  demand: number;
+  sold: number;
+  lunchLost: number;
+  dinnerLost: number;
+  bottleneck: string | null;
+  lunchBottleneck: string | null;
+  dinnerBottleneck: string | null;
+  price: number;
+  recipeCheeseOz: number;
+  recipePepperoniOz: number;
+  actualCheeseOz: number;
+  actualPepperoniOz: number;
+  doughSpoiled: number;
+  primePct: number;
+  profit: number;
+};
+
+function generateSmartCustomerReviews(ctx: SmartReviewContext) {
+  const reviews: string[] = [];
+  const badReviews: string[] = [];
+  const goodReviews: string[] = [];
+
+  const addBad = (review: string) => {
+    if (!badReviews.includes(review)) badReviews.push(review);
+  };
+  const addGood = (review: string) => {
+    if (!goodReviews.includes(review)) goodReviews.push(review);
+  };
+
+  const fulfillmentRate = n(ctx.demand) > 0 ? n(ctx.sold) / n(ctx.demand) : 1;
+  const stockoutBottlenecks = [ctx.bottleneck, ctx.lunchBottleneck, ctx.dinnerBottleneck];
+  const anyStockout = stockoutBottlenecks.some((b) =>
+    ["dough", "cheese", "pepperoni", "boxes"].includes(String(b))
+  );
+
+  if (ctx.dinnerLost > 20) addBad("Took forever during dinner.");
+  if (ctx.lunchLost > 10) addBad("Lunch service was slow.");
+  if (fulfillmentRate < 0.85) addBad("They were too backed up to handle the orders.");
+  if (fulfillmentRate < 0.65) addBad("I tried to order, but they were basically overwhelmed.");
+
+  if (stockoutBottlenecks.includes("dough")) addBad("They were sold out when I tried to order.");
+  if (stockoutBottlenecks.includes("cheese")) addBad("They ran out of cheese somehow.");
+  if (stockoutBottlenecks.includes("pepperoni")) addBad("They ran out of pepperoni on a pepperoni pizza.");
+  if (stockoutBottlenecks.includes("boxes")) addBad("They had pizzas but not enough boxes ready.");
+  if (stockoutBottlenecks.includes("dinner labor")) addBad("They clearly didn’t have enough people working dinner.");
+  if (stockoutBottlenecks.includes("lunch labor")) addBad("The lunch rush needed more help behind the counter.");
+
+  if (ctx.recipePepperoniOz < 0.5) addBad("Barely any pepperoni on the pizza.");
+  else if (ctx.recipePepperoniOz < 1.25) addBad("The pepperoni felt pretty light.");
+  if (ctx.recipeCheeseOz < 6.5) addBad("Pizza felt light on cheese.");
+  if (ctx.recipeCheeseOz > 10.5 || ctx.actualCheeseOz > 11) addBad("Pizza was overloaded and greasy.");
+  if (ctx.actualPepperoniOz > 4.5) addBad("Way too much pepperoni grease.");
+
+  if (ctx.price > 22) addBad("$25 pizza better be perfect, and this was not.");
+  else if (ctx.price > 19) addBad("Way too expensive for what you get.");
+  else if (ctx.price > 16 && ctx.rating < 4.2) addBad("For that price, I expected better.");
+  if (ctx.price < 11 && ctx.rating < 4) addBad("Cheap, but it tasted like corners were cut.");
+
+  if (ctx.doughSpoiled > 35 && ctx.rating < 4) addBad("The dough did not taste as fresh today.");
+  if (ctx.primePct > 78 && ctx.rating < 4) addBad("Something felt off about the quality tonight.");
+  if (ctx.profit < 0 && ctx.rating < 3.8) addBad("The whole operation felt chaotic.");
+
+  if (ctx.lunchLost === 0 && ctx.dinnerLost === 0 && !anyStockout) addGood("Got my food quickly, even during the rush.");
+  if (ctx.recipePepperoniOz >= 2 && ctx.recipePepperoniOz <= 3.25) addGood("Perfect amount of pepperoni.");
+  if (ctx.recipeCheeseOz >= 7 && ctx.recipeCheeseOz <= 9.25) addGood("Cheese was just right.");
+  if (ctx.price <= 15 && ctx.rating >= 4) addGood("Great value for the price.");
+  if (ctx.price >= 16 && ctx.rating >= 4.6) addGood("Pricier than some places, but worth it.");
+  if (ctx.rating >= 4.7 && fulfillmentRate >= 0.95) addGood("This place is becoming my go-to.");
+
+  if (ctx.rating < 3.8) reviews.push(...badReviews);
+  else if (ctx.rating >= 4.4) reviews.push(...goodReviews, ...badReviews);
+  else reviews.push(...badReviews, ...goodReviews);
+
+  if (reviews.length === 0) {
+    if (ctx.rating >= 4.4) reviews.push("Solid pizza, fair price, and smooth service.");
+    else if (ctx.rating >= 3.8) reviews.push("It was fine, but not memorable.");
+    else reviews.push("Something about today did not feel right.");
+  }
+
+  return reviews.slice(0, 3);
+}
+
+function calculateCustomerRating(args: {
+  qualityScore: number;
+  fulfillmentRate: number;
+  price: number;
+  doughStockout: boolean;
+  primePct: number;
+}) {
+  const fulfillmentScore = clamp(n(args.fulfillmentRate) * 5, 0, 5);
+
+  let priceScore = 5;
+  const price = n(args.price);
+  if (price > 14) priceScore -= (price - 14) * 0.25;
+  if (price > 18) priceScore -= (price - 18) * 0.45;
+  if (price > 22) priceScore -= (price - 22) * 0.75;
+  if (price < 11) priceScore -= (11 - price) * 0.15;
+  priceScore = clamp(priceScore, 0, 5);
+
+  let rating = n(args.qualityScore) * 0.5 + fulfillmentScore * 0.3 + priceScore * 0.2;
+
+  if (args.doughStockout) rating -= 0.75;
+  if (args.fulfillmentRate < 0.85) rating -= 0.5;
+  if (args.fulfillmentRate < 0.65) rating -= 0.75;
+  if (args.primePct > 78) rating -= 0.2;
+
+  return Math.round(clamp(rating, 0, 5) * 10) / 10;
+}
+
+function renderStars(rating: number) {
+  const full = Math.floor(clamp(n(rating), 0, 5));
+  return "★".repeat(full) + "☆".repeat(5 - full);
+}
+
 function phaseDemandSplit(totalDemand: number, dow: number) {
   let dinnerWeight = 0.65;
   if (dow === 4) dinnerWeight = 0.72;
@@ -485,6 +681,8 @@ function initialState(mode: GameMode = "standard", startingPhase: Phase = "intro
 
     brandPenalty: 0,
     brandPenaltyDaysLeft: 0,
+
+    satisfactionHistory: [],
 
     accountingView: "simple",
 
@@ -708,6 +906,8 @@ function simulateDay(state: GameState): DayResult {
 
   // Brand equity penalty from past skimping. Applied as a demand multiplier.
   const brandPenaltyMult = 1 - Math.max(0, Math.min(0.6, n(state.brandPenalty)));
+  const customerReputation = getCustomerReputation(state.satisfactionHistory);
+  const reputationDemandMult = getReputationDemandEffect(customerReputation);
 
   const rawDemand =
     BASE_DEMAND *
@@ -717,6 +917,7 @@ function simulateDay(state: GameState): DayResult {
     pepperoniEffect *
     demandMult *
     brandPenaltyMult *
+    reputationDemandMult *
     randomNoise;
 
   const totalDemand = Math.max(0, Math.round(rawDemand));
@@ -724,6 +925,24 @@ function simulateDay(state: GameState): DayResult {
 
   // Detect skimping TODAY (pepperoni too low). Triggers a penalty that hits tomorrow.
   const skimpTriggeredToday = n(decisions.pepperoniPerPizza) < SKIMP_THRESHOLD_OZ;
+
+  if (customerReputation >= 4.4) {
+    events.push({
+      id: "strong_reputation",
+      title: "Strong Customer Reputation",
+      body: `Recent Google-style ratings are averaging ${customerReputation.toFixed(
+        1
+      )} stars. Demand is up because customers are telling friends.`,
+    });
+  } else if (customerReputation < 3.8) {
+    events.push({
+      id: "weak_reputation",
+      title: "Weak Customer Reputation",
+      body: `Recent Google-style ratings are averaging ${customerReputation.toFixed(
+        1
+      )} stars. Demand is down because customers are hesitant to come back.`,
+    });
+  }
 
   if (n(state.brandPenalty) > 0.01) {
     events.push({
@@ -908,6 +1127,42 @@ function simulateDay(state: GameState): DayResult {
   else if (profit > 300) coaching.push(`Strong day. This is what a good operating day looks like.`);
   if (primePct < 55 && sold > 0) coaching.push(`Prime cost was controlled. That is how owners get paid.`);
 
+  const fulfillmentRate = demand > 0 ? sold / demand : 1;
+  const doughStockout = sold > 0 && lost > 0 && (lunchBottleneck === "dough" || dinnerBottleneck === "dough" || bottleneck === "dough");
+  const qualityScore = clamp(
+    5 - Math.abs(n(decisions.cheesePerPizza) - 8) * 0.28 - Math.abs(n(decisions.pepperoniPerPizza) - 2.5) * 0.45,
+    0,
+    5
+  );
+  const customerRating = calculateCustomerRating({
+    qualityScore,
+    fulfillmentRate,
+    price: effectivePrice,
+    doughStockout,
+    primePct,
+  });
+  const ratingFeedback = getCustomerRatingFeedback(customerRating);
+  const smartCustomerReviews = generateSmartCustomerReviews({
+    rating: customerRating,
+    demand,
+    sold,
+    lunchLost,
+    dinnerLost,
+    bottleneck,
+    lunchBottleneck,
+    dinnerBottleneck,
+    price: effectivePrice,
+    recipeCheeseOz: n(decisions.cheesePerPizza),
+    recipePepperoniOz: n(decisions.pepperoniPerPizza),
+    actualCheeseOz,
+    actualPepperoniOz,
+    doughSpoiled,
+    primePct,
+    profit,
+  });
+
+  coaching.push(`Customer rating: ${customerRating.toFixed(1)} stars. ${ratingFeedback.message}`);
+
   return {
     day,
     dow,
@@ -930,6 +1185,10 @@ function simulateDay(state: GameState): DayResult {
     fixedCost,
     totalCost,
     profit,
+    customerRating,
+    reputationBefore: customerReputation,
+    customerReviews: smartCustomerReviews,
+    customerRatingMessage: ratingFeedback.message,
     foodPct,
     laborPct,
     primePct,
@@ -1101,7 +1360,8 @@ export default function Page() {
     DAY_MULT[dow] *
     Math.pow(15 / Math.max(10, n(d.price)), 1.4) *
     (1 + (n(d.cheesePerPizza) - 8) * 0.05) *
-    getPepperoniDemandEffect(n(d.pepperoniPerPizza));
+    getPepperoniDemandEffect(n(d.pepperoniPerPizza)) *
+    getReputationDemandEffect(getCustomerReputation(state.satisfactionHistory));
 
   const projectedRange = {
     lo: Math.round(projectedDemandMid * 0.92),
@@ -1327,6 +1587,7 @@ export default function Page() {
         },
         lastResult: null,
         history: newHistory,
+        satisfactionHistory: [...s.satisfactionHistory.slice(-6), finalized.customerRating],
         weeklySummary,
         distributionRequest: 0,
         phase: nextPhase,
@@ -1494,6 +1755,10 @@ export default function Page() {
                 big={`${state.history.reduce((s, h) => s + n(h.lost), 0)}`}
                 label="Tickets lost"
               />
+              <StatCell
+                big={`${getCustomerReputation(state.satisfactionHistory).toFixed(1)}★`}
+                label="Final customer rating"
+              />
             </div>
 
             <button className="bigBtn red" onClick={resetGame}>
@@ -1524,6 +1789,8 @@ export default function Page() {
               </div>
             </div>
 
+            <CustomerRatingFlash result={r} />
+
             <div className="metricGrid">
               <MetricBox label="Demand" value={`${n(r.demand)}`} />
               <MetricBox label="Sold" value={`${n(r.sold)}`} />
@@ -1540,6 +1807,11 @@ export default function Page() {
                 label="Profit"
                 value={money(n(r.profit), true)}
                 tone={n(r.profit) >= 0 ? "good" : "bad"}
+              />
+              <MetricBox
+                label="Customer Rating"
+                value={`${n(r.customerRating).toFixed(1)} ★`}
+                tone={n(r.customerRating) >= 4.3 ? "good" : n(r.customerRating) < 3.8 ? "bad" : undefined}
               />
             </div>
 
@@ -1843,6 +2115,7 @@ function Shell({ children }: { children: React.ReactNode }) {
 function TopStatusBar({ state }: { state: GameState }) {
   const dow = (state.day - 1) % 7;
   const brandActive = n(state.brandPenalty) > 0.01 && n(state.brandPenaltyDaysLeft) > 0;
+  const customerReputation = getCustomerReputation(state.satisfactionHistory);
   const modeCfg = MODES[state.mode];
 
   return (
@@ -1862,6 +2135,10 @@ function TopStatusBar({ state }: { state: GameState }) {
             ⚠ BRAND −{Math.round(n(state.brandPenalty) * 100)}%
           </div>
         )}
+        <div className="topStat">
+          <div className="topStatVal">{customerReputation.toFixed(1)}★</div>
+          <div className="topStatLabel">RATING</div>
+        </div>
         <div className="topStat">
           <div className="topStatVal">{money(state.cash)}</div>
           <div className="topStatLabel">CASH</div>
@@ -2566,6 +2843,32 @@ function Silhouette({ className = "" }: { className?: string }) {
       <rect x="14" y="88" width="10" height="6" rx="1" />
       <rect x="22" y="88" width="10" height="6" rx="1" />
     </svg>
+  );
+}
+
+
+function CustomerRatingFlash({ result }: { result: DayResult }) {
+  const rating = n(result.customerRating);
+  const tone = rating >= 4.5 ? "great" : rating >= 3.8 ? "okay" : "bad";
+
+  return (
+    <div className={`customerRatingFlash ${tone}`}>
+      <div className="customerRatingStoreGlow" />
+      <div className="customerRatingEyebrow">CUSTOMER SATISFACTION</div>
+      <div className="customerStars">{renderStars(rating)}</div>
+      <div className="customerRatingNumber">{rating.toFixed(1)} / 5.0</div>
+      <div className="customerRatingMsg">{result.customerRatingMessage}</div>
+      <div className="customerReviewGrid">
+        {result.customerReviews.map((review, index) => (
+          <div key={index} className="customerReviewBubble">
+            “{review}”
+          </div>
+        ))}
+      </div>
+      <div className="customerReputationNote">
+        Reputation before today: {n(result.reputationBefore).toFixed(1)}★ · This rating affects demand over the next few days.
+      </div>
+    </div>
   );
 }
 
@@ -3904,6 +4207,121 @@ function Styles() {
         background: #3ba55d;
         border-radius: 999px;
         margin-bottom: 10px;
+      }
+
+
+
+      /* =========== CUSTOMER SATISFACTION FLASH =========== */
+      .customerRatingFlash {
+        position: relative;
+        overflow: hidden;
+        margin: 16px 0 18px;
+        padding: 24px 18px;
+        border-radius: 22px;
+        text-align: center;
+        background:
+          linear-gradient(180deg, rgba(22, 17, 12, 0.8), rgba(22, 17, 12, 0.96)),
+          url('/storefront.jpeg');
+        background-size: cover;
+        background-position: center;
+        border: 4px solid #f2b443;
+        box-shadow: 0 0 42px rgba(242, 180, 67, 0.55);
+        animation: ratingPop 0.55s ease-out, ratingPulse 0.9s infinite alternate;
+      }
+      .customerRatingFlash.bad {
+        border-color: #ff5b4d;
+        box-shadow: 0 0 46px rgba(255, 91, 77, 0.65);
+        animation: ratingPop 0.55s ease-out, ratingShake 0.36s 0.6s ease-in-out, badRatingPulse 0.9s infinite alternate;
+      }
+      .customerRatingFlash.okay {
+        border-color: #f3e7c9;
+        box-shadow: 0 0 36px rgba(243, 231, 201, 0.35);
+      }
+      .customerRatingStoreGlow {
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(circle at 50% 20%, rgba(242, 180, 67, 0.24), transparent 48%);
+        pointer-events: none;
+      }
+      .customerRatingEyebrow {
+        position: relative;
+        color: #f2b443;
+        font-size: 12px;
+        letter-spacing: .18em;
+        font-weight: 1000;
+      }
+      .customerStars {
+        position: relative;
+        margin-top: 8px;
+        font-size: clamp(42px, 11vw, 82px);
+        line-height: 1;
+        letter-spacing: 4px;
+        color: #f2b443;
+        font-weight: 1000;
+        text-shadow: 0 0 18px rgba(242, 180, 67, 0.95);
+      }
+      .customerRatingFlash.bad .customerStars {
+        color: #ff5b4d;
+        text-shadow: 0 0 18px rgba(255, 91, 77, 0.95);
+      }
+      .customerRatingNumber {
+        position: relative;
+        margin-top: 8px;
+        color: #fff7df;
+        font-size: 42px;
+        font-weight: 1000;
+        letter-spacing: -0.03em;
+      }
+      .customerRatingMsg {
+        position: relative;
+        margin-top: 8px;
+        color: white;
+        font-size: 22px;
+        font-weight: 1000;
+        text-transform: uppercase;
+        line-height: 1.15;
+      }
+      .customerReviewGrid {
+        position: relative;
+        display: grid;
+        gap: 8px;
+        margin-top: 16px;
+      }
+      .customerReviewBubble {
+        background: rgba(255, 255, 255, 0.94);
+        color: #16110c;
+        border-radius: 13px;
+        padding: 10px 12px;
+        font-size: 14px;
+        font-weight: 900;
+        box-shadow: 0 6px 16px rgba(0,0,0,0.22);
+      }
+      .customerReputationNote {
+        position: relative;
+        margin-top: 12px;
+        color: #d8c8a2;
+        font-size: 12px;
+        font-weight: 800;
+      }
+      @keyframes ratingPop {
+        0% { transform: scale(0.82) rotate(-2deg); opacity: 0; }
+        70% { transform: scale(1.04) rotate(1deg); opacity: 1; }
+        100% { transform: scale(1) rotate(0); opacity: 1; }
+      }
+      @keyframes ratingPulse {
+        from { box-shadow: 0 0 24px rgba(242, 180, 67, 0.42); }
+        to { box-shadow: 0 0 62px rgba(242, 180, 67, 0.95); }
+      }
+      @keyframes badRatingPulse {
+        from { box-shadow: 0 0 24px rgba(255, 91, 77, 0.42); }
+        to { box-shadow: 0 0 62px rgba(255, 91, 77, 0.95); }
+      }
+      @keyframes ratingShake {
+        0%, 100% { transform: translateX(0); }
+        20% { transform: translateX(-10px); }
+        40% { transform: translateX(10px); }
+        60% { transform: translateX(-7px); }
+        80% { transform: translateX(7px); }
       }
 
       /* =========== RESPONSIVE =========== */
